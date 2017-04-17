@@ -48,8 +48,8 @@ open CONTENT, ">$content_file";
 # I don't want to be flamed by web site administrators for
 # the lousy behavior of your robots. 
 
-my $ROBOT_NAME = 'aghosh17/1.0';
-my $ROBOT_MAIL = 'aghosh17@cs.jhu.edu';
+my $ROBOT_NAME = 'jlee562/1.1';
+my $ROBOT_MAIL = 'jlee562@cs.jhu.edu';
 
 #
 # create an instance of LWP::RobotUA. 
@@ -73,8 +73,12 @@ my $ROBOT_MAIL = 'aghosh17@cs.jhu.edu';
 #
 
 my $robot = new LWP::RobotUA $ROBOT_NAME, $ROBOT_MAIL;
+$robot->delay(.01);
 
 my $base_url    = shift(@ARGV);   # the root URL we will start from
+$base_url =~ /http:\/\/(www\.)([^\/]*)/;
+my $domain = $2;
+print "\nDOMAIN: $domain\n";
 
 my @search_urls = ();    # current URL's waiting to be trapsed
 my @wanted_urls = ();    # URL's which contain info that we are looking for
@@ -83,20 +87,15 @@ my %pushed      = ();    # URL's which have either been visited or are already
                          #  on the @search_urls array
     
 push @search_urls, $base_url;
-
+$pushed{$base_url} = 1;
 
 while (@search_urls) {
     my $url = shift @search_urls;
 
-    #
-    # insure that the URL is well-formed, otherwise skip it
-    # if not or something other than HTTP
-    #
-
     my $parsed_url = eval { new URI::URL $url; };
 
     next if $@;
-    next if $parsed_url->scheme !~/http/i;
+    next if $parsed_url->scheme !~ /http/i;
 	
     #
     # get header information on URL to see it's status (exis-
@@ -111,7 +110,7 @@ while (@search_urls) {
     my $response = $robot->request( $request );
 	
     next if $response->code != RC_OK;
-    next if ! &wanted_content( $response->content_type );
+    next if ! &wanted_content( $response->content_type, $url);
 
     print LOG "[GET  ] $url\n";
 
@@ -125,30 +124,44 @@ while (@search_urls) {
 
     &extract_content ($response->content, $url);
 
-    my @related_urls  = &grab_urls( $response->content );
+    my @related_urls  = &grab_urls( $response->content, $url);
 
     foreach my $link (@related_urls) {
 
-	my $full_url = eval { (new URI::URL $link, $response->base)->abs; };
+	   my $full_url = eval { (new URI::URL $link, $response->base)->abs; };
 	    
-	delete $relevance{ $link } and next if $@;
+	   delete $relevance{ $link } and next if $@;
 
-	$relevance{ $full_url } = $relevance{ $link };
-	delete $relevance{ $link } if $full_url ne $link;
+       if (defined $full_url) {
+            if ($full_url =~ /$url#.*/){ # Self-referential links
+              print "*SR ".$full_url."\n";
+                next;
+            }
 
-	push @search_urls, $full_url and $pushed{ $full_url } = 1
-	    if ! exists $pushed{ $full_url };
-	
+            if ($full_url !~ /\.$domain/){  # Non-local links
+               print "*NL ".$full_url."\n";
+                next;
+            }
+        }
+
+       $relevance{ $full_url } = $relevance{ $link };
+	   delete $relevance{ $link } if $full_url ne $link;
+
+	   push @search_urls, $full_url and $pushed{ $full_url } = 1
+	       if ! exists $pushed{ $full_url };
     }
 
     #
     # reorder the urls base upon relevance so that we search
     # areas which seem most relevant to us first.
     #
-
     @search_urls = 
-	sort { $relevance{ $a } <=> $relevance{ $b }; } @search_urls;
+	sort { $relevance{ $b } <=> $relevance{ $a }; } @search_urls;
 
+    #print $url, "\n";
+    #for my $i (0 .. scalar @search_urls - 1){
+    #    print $i, ": ", $relevance{ $search_urls[$i] }, ": ", $search_urls[$i], "\n"; 
+    #}
 }
 
 close LOG;
@@ -158,8 +171,6 @@ exit (0);
     
 #
 # wanted_content
-#
-#    UNIMPLEMENTED
 #
 #  this function should check to see if the current URL content
 #  is something which is either
@@ -173,29 +184,28 @@ exit (0);
 #
 
 sub wanted_content {
-	  my $url = shift;
+    
     my $content = shift;
-		
-		# if content pdf
-		if ($content =~ m@application/pdf@) {
-			push @wanted_urls, @url;
-		}
-		
-		#if content postscript
-		if ($content =~ m@application/postcript@) {
-			push @wanted_urls, @url;
-		}
-		
-		# default given to us by Yarowsky
-		if ($content =~ m@text/html@) {
-			    return $content =~ m@text/html@;
-		}
+    my $url = shift;
+
+    # if postcript content, save on wanted_urls array 
+    if ($content =~ m@application/postscript@)
+    {
+        print LOG "[PS   ] $url\n";
+        push @wanted_urls, $url; 
+    }
+    
+    if ($content =~ m@application/pdf@)
+    {
+        print LOG "[PDF  ] $url\n";
+        push @wanted_urls, $url;
+    }
+
+    return $content =~ m@text/html@;
 }
 
 #
 # extract_content
-#
-#    UNIMPLEMENTED
 #
 #  this function should read through the context of all the text/html
 #  documents retrieved by the web robot and extract three types of
@@ -205,28 +215,38 @@ sub extract_content {
     my $content = shift;
     my $url = shift;
 
-    my $email;
-    my $phone;
-		# third type, address
-		my $home_address;
-		# fourth type, city
-		my $city;
-		
-		#implement reg.exp for email
-		while ($content =~ ) {
-			print "E-mail: ", $1;
-			print "\n";
-			push @email, $&;
-		}
+    my $email = ""; 
+    my $phone = ""; 
+    my $address = ""; 
 
-    # parse out information you want
-    # print it in the tuple format to the CONTENT and LOG files, for example:
+    skip: 
+    while ($content =~ s/<\s*[aA] ([^>]*)>\s*(?:<[^>]*>)*(?:([^<]*)(?:<[^aA>]*>)*<\/\s*[aA]\s*>)?//) {
+        # content as long as brackets exist
 
-    print CONTENT "($url; EMAIL; $email)\n";
-    print LOG "($url; EMAIL; $email)\n";
+        my $ref = $1; # inside bracket
+        my $text = $2; 
 
-    print CONTENT "($url; PHONE; $phone)\n";
-    print LOG "($url; PHONE; $phone)\n";
+        if( $ref !~ /^\s*body\s+/i){ # if tag is NOT body, next 
+            next skip; 
+        }
+
+        if ($text =~ /(\w+)@(\w+)\.(\w+)/){ 
+            $email = $1 . '/@/' . $2 . '.'. $3;
+            print CONTENT "($url; EMAIL; $email)\n";
+            print LOG "($url; EMAIL; $email)\n";
+        }
+        if ($text =~ /(\w+),\s{1}(\w)\s{1}([0-9]{5,})/){
+            $address = $1 . ', ' . $2 . ' ' . $3;
+            print CONTENT "($url; CITY; $address)\n";
+            print LOG "($url; CITY; $address)\n";
+        }
+        if ($text =~ /([0-9]{3})-([0-9]{3})-([0-9]{4})/){
+            $phone = $1 . '-' . $2 . '-' . $3;
+            print CONTENT "($url; PHONE; $phone)\n";
+            print LOG "($url; PHONE; $phone)\n";
+        }
+
+    } # end of while loop 
 
     return;
 }
@@ -240,7 +260,7 @@ sub extract_content {
 #   picks out all links and any immediately related text.
 #
 #   Example:
-#
+# 
 #     given 
 #
 #       <a href="somepage.html">This is some web page</a>
@@ -268,43 +288,139 @@ sub extract_content {
 
 sub grab_urls {
     my $content = shift;
+    my $url = shift; # current base url 
     my %urls    = ();    # NOTE: this is an associative array so that we only
                          #       push the same "href" value once.
 
-    
-  skip:
+    skip:
     while ($content =~ s/<\s*[aA] ([^>]*)>\s*(?:<[^>]*>)*(?:([^<]*)(?:<[^aA>]*>)*<\/\s*[aA]\s*>)?//) {
 	    
-	my $tag_text = $1;
-	my $reg_text = $2;
-	my $link = "";
+	    my $tag_text = $1;
+	    my $reg_text = $2;
+	    my $link = "";
 
-	if (defined $reg_text) {
-	    $reg_text =~ s/[\n\r]/ /;
-	    $reg_text =~ s/\s{2,}/ /;
+	   if (defined $reg_text) {
+	       $reg_text =~ s/[\n\r]/ /;
+	       $reg_text =~ s/\s{2,}/ /;
+	   }
 
-	    #
-	    # compute some relevancy function here
-	    #
-	}
+	   if ($tag_text =~ /href\s*=\s*(?:["']([^"']*)["']|([^\s])*)/i) {
+	       $link = $1 || $2;
 
-	if ($tag_text =~ /href\s*=\s*(?:["']([^"']*)["']|([^\s])*)/i) {
-	    $link = $1 || $2;
+	       $relevance{ $link } = &similarity( $link, $reg_text, $url); 
+	       $urls{ $link }      = 1; # or push @urls, $link;
+	   }
 
-	    #
-	    # okay, the same link may occur more than once in a
-	    # document, but currently I only consider the last
-	    # instance of a particular link
-	    #
-
-	    $relevance{ $link } = 1;
-	    $urls{ $link }      = 1;
-	}
-
-	print $reg_text, "\n" if defined $reg_text;
-	print $link, "\n\n";
-    }
+	   print "text: ", $reg_text, "\n" if defined $reg_text;
+	   print "link: ", $link, "\n\n";
+    
+    } # end of while loop 
 
     return keys %urls;   # the keys of the associative array hold all the
-                         # links we've found (no repeats).
+                         # links we've found (no repeats)
 }
+
+# SIMILARITY
+#
+# PARMA: $link, $text, $url 
+#
+# Compute simlarity for link and text and return relevancy
+# Most relevant to the current url
+# 
+sub similarity{
+
+    my $link = shift;
+    my $text = shift;
+    my $url = shift; # current url 
+
+    my @words;
+    my $count = () = $link =~ /\//g;
+    my $count_base = () = $url =~ /\//g;
+
+    # difference between number of "/" and change to weight
+    my $dif = 7 - abs($count - $count_base);
+
+    # grep all the words separated by delimiter 
+    if(defined $text){ @words = split / /, $text; }
+    my @keys = split /\/|\./, $link; 
+
+    push @words, @keys;
+    @words = grep/\S/, @words; 
+
+    # create word hash: words from text and link 
+    my %word_hash = ();
+    for (keys %word_hash){
+        delete $word_hash{$_};
+    }
+
+    for my $i(0 .. scalar @words - 1){
+        $word_hash{ $words[$i] } += 1; 
+    }
+
+    # create urls: words from the orignial link 
+    my @urls = split /\/|\./, $url;
+    my %url_hash = ();
+    for (keys %url_hash){
+        delete $url_hash{$_};
+    }
+    for my $i(0 .. scalar @urls - 1){
+        $url_hash{ $urls[$i] } += 1; 
+    }
+
+    # calculate the cosine relevance of two vectors
+    my $relv = &cosine( \%word_hash, \%url_hash);
+
+    # return the addition of dif and relv 
+    return $dif + $relv;
+}
+
+
+# 
+# COSINE
+# 
+# PARMA: vect1, vect2 
+#
+# Compute vector1 and vector2 cosine similarity 
+#
+#
+sub cosine{
+
+    my $vec1 = shift;
+    my $vec2 = shift;
+
+    my $num     = 0;
+    my $sum_sq1 = 0;
+    my $sum_sq2 = 0;
+
+    my @val1 = values %{ $vec1 };
+    my @val2 = values %{ $vec2 };
+
+    # determine shortest length vector. This should speed 
+    # things up if one vector is considerable longer than
+    # the other (i.e. query vector to document vector).
+
+    if ((scalar @val1) > (scalar @val2)) {
+        my $tmp  = $vec1;
+        $vec1 = $vec2;
+        $vec2 = $tmp;
+    }
+
+    # calculate the cross product
+
+    my $key = undef;
+    my $val = undef;
+
+    while (($key, $val) = each %{ $vec1 }) {
+        $num += $val * ($$vec2{ $key } || 0);
+    }
+
+    # calculate the sum of squares
+
+    my $term = undef;
+
+    foreach $term (@val1) { $sum_sq1 += $term * $term; }
+    foreach $term (@val2) { $sum_sq2 += $term * $term; }
+
+    return ( $num / sqrt( $sum_sq1 * $sum_sq2 ));
+}
+
