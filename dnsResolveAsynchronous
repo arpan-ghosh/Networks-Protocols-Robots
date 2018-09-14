@@ -1,0 +1,37 @@
+<?php
+
+/**
+	 * Process in parallel via forking (PHP)
+	 */
+	public function processDNSResolutionsParallel(array $hostnames,$ipInfo,&$hostnameMap,$processes=4) {
+		$hostnameChunks = array_chunk($hostnames,ceil((count($hostnames)/$processes)));
+		$pid = -1;
+		$children = array();
+
+		$ip = [];
+		$resolveChunk=[];
+
+		foreach ($hostnameChunks as $chunk) {
+			$pid = pcntl_fork();
+
+			if ($pid === -1) {
+				die();
+			} else if ($pid === 0) {
+print "Forked. Child is: {$pid}";
+				// process the chunk since we've successfully forked
+				$resolveChunk = self::dnsResolver($chunk,$ipInfo,$hostnameMap);
+				$ip+=$resolveChunk;
+				exit(0);
+			} else {
+				// we become the parent
+				$children[] = $pid;
+			}
+			$ip+=$resolveChunk;
+		}
+
+		// before returning anything wait for any children to finish
+		foreach ($children as $pid) {
+			pcntl_waitpid($pid,$status);
+		}
+		return $ip;
+	}
